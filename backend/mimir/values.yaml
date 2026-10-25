@@ -1,0 +1,142 @@
+# Grafana 공식 차트 mimir-distributed 6.2.1 (Mimir 3.2.1) — 분산 모드
+# 차트 기본값은 운영용이라 큼 → 단일 노드 8GB 에 맞춰 줄인 값만 여기에 적는다
+#
+# 뜨는 파드 (8개):
+#   쓰기  gateway → distributor → ingester ─(2시간마다)─▶ SeaweedFS
+#   읽기  gateway → query-frontend → query-scheduler → querier → ingester + store-gateway
+#   정리  compactor (블록 합치기, 7일 지난 것 삭제)
+
+# ── 아키텍처: classic ────────────────────────────────────────────────
+# 차트 6.x 기본값은 ingest storage(쓰기 경로에 Kafka 를 끼움, Kafka 1Gi 요청)
+# 메모리 때문에 Mimir 2.x 방식(distributor → ingester 직접)으로. 차트의 classic-architecture.yaml 과 같은 내용
+kafka:
+  enabled: false
+
+# ── 안 쓰는 것 끄기 ──────────────────────────────────────────────────
+minio:
+  enabled: false            # 단종. SeaweedFS 를 씀
+rollout_operator:
+  enabled: false            # 존 분산 롤아웃용. 존 분산을 안 하니 불필요
+ruler:
+  enabled: false            # 알림 규칙 → 7.5 에서 켬
+alertmanager:
+  enabled: false            # 7.5 에서 결정 (Grafana 알림 vs Mimir alertmanager)
+overrides_exporter:
+  enabled: false            # 테넌트 한도 메트릭. 지금은 불필요
+
+# ── 컴포넌트: 하나씩, 작게 ───────────────────────────────────────────
+distributor:
+  replicas: 1
+  resources:
+    requests: { cpu: 50m, memory: 128Mi }
+    limits:   { memory: 512Mi }
+
+ingester:
+  replicas: 1
+  zoneAwareReplication:
+    enabled: false          # 실무: 가용영역 3곳에 나눠 둠. 단일 노드라 의미 없음
+  persistentVolume:
+    size: 2Gi
+    storageClass: local-path   # 최근 2시간 + WAL
+  resources:
+    requests: { cpu: 100m, memory: 256Mi }
+    limits:   { memory: 1Gi }
+
+store_gateway:
+  replicas: 1
+  zoneAwareReplication:
+    enabled: false
+  persistentVolume:
+    size: 2Gi
+    storageClass: local-path
+  resources:
+    requests: { cpu: 50m, memory: 128Mi }
+    limits:   { memory: 512Mi }
+
+compactor:
+  replicas: 1
+  persistentVolume:
+    size: 2Gi
+    storageClass: local-path
+  resources:
+    requests: { cpu: 50m, memory: 128Mi }
+    limits:   { memory: 512Mi }
+
+querier:
+  replicas: 1
+  resources:
+    requests: { cpu: 50m, memory: 128Mi }
+    limits:   { memory: 512Mi }
+
+query_frontend:
+  replicas: 1
+  resources:
+    requests: { cpu: 50m, memory: 64Mi }
+    limits:   { memory: 256Mi }
+
+query_scheduler:
+  replicas: 1
+  resources:
+    requests: { cpu: 20m, memory: 64Mi }
+    limits:   { memory: 256Mi }
+
+gateway:
+  replicas: 1
+  resources:
+    requests: { cpu: 20m, memory: 32Mi }
+    limits:   { memory: 128Mi }
+
+# ── 저장소 열쇠 ──────────────────────────────────────────────────────
+# 모든 Mimir 파드에 AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY 환경변수로
+# 차트가 -config.expand-env=true 를 이미 붙이므로 설정의 ${...} 가 치환됨
+global:
+  extraEnvFrom:
+  - secretRef:
+      name: mimir-s3-credentials
+
+# ── Mimir 설정 (차트 기본 설정 위에 덮어씀) ──────────────────────────
+mimir:
+  structuredConfig:
+    usage_stats:
+      enabled: false
+
+    # classic 아키텍처 (Kafka 안 씀)
+    ingest_storage:
+      enabled: false
+      kafka:
+        address: null
+        topic: null
+        auto_create_topic_default_partitions: null
+    distributor:
+      remote_timeout: null
+    ingester:
+      push_grpc_method_enabled: null
+      ring:
+        replication_factor: 1      # 기본 3. ingester 가 1개라 1로
+    store_gateway:
+      sharding_ring:
+        replication_factor: 1
+
+    # 오브젝트 스토리지: SeaweedFS (S3 API). Phase 9 에서는 endpoint 만 AWS S3 로
+    common:
+      storage:
+        backend: s3
+        s3:
+          endpoint: seaweedfs.monitoring.svc:8333
+          region: us-east-1        # 비워두면 클라이언트가 리전 조회를 시도함
+          bucket_name: mimir
+          access_key_id: ${AWS_ACCESS_KEY_ID}
+          secret_access_key: ${AWS_SECRET_ACCESS_KEY}
+          insecure: true           # 클러스터 내부 http
+          bucket_lookup_type: path
+
+    # 버킷 하나를 prefix 로 나눔
+    blocks_storage:
+      storage_prefix: blocks
+    ruler_storage:
+      storage_prefix: ruler
+    alertmanager_storage:
+      storage_prefix: alertmanager
+
+    limits:
+      compactor_blocks_retention_period: 7d   # 보관 기간
