@@ -15,12 +15,12 @@ ArgoCD 가 배포한다. Application 정의는 `ldh-infra-lab-manifests/argocd/a
 | 폴더 | 무엇 | 실무에서 배포되는 곳 |
 |---|---|---|
 | `alloy/` | 수집기. 메트릭·로그·트레이스를 모아 백엔드로 push | **앱 클러스터** (노드·파드 옆에 있어야 함) |
-| `backend/` | 저장소. MinIO(S3 대용), Mimir, Loki, Tempo | **모니터링 클러스터** |
+| `backend/` | 저장소. SeaweedFS(S3 대용), Mimir, Loki, Tempo | **모니터링 클러스터** |
 | `grafana/` | 화면. 데이터소스, 대시보드(JSON) | 모니터링 클러스터 |
 
 ```
 앱 클러스터                                  모니터링 클러스터
- 앱들 ─▶ Alloy ── push (테넌트 헤더) ──▶  Mimir / Loki / Tempo ─▶ MinIO(S3)
+ 앱들 ─▶ Alloy ── push (테넌트 헤더) ──▶  Mimir / Loki / Tempo ─▶ SeaweedFS(S3)
                                                   ▲
                                                Grafana
 ```
@@ -31,7 +31,7 @@ ArgoCD 가 배포한다. Application 정의는 `ldh-infra-lab-manifests/argocd/a
 |---|---|---|
 | 클러스터 | 앱 / 모니터링 분리 | **하나**. `monitoring` ns + AppProject `observability` 로만 격리 → **장애 격리는 안 됨** |
 | 배포 모드 | 분산 모드 (역할별 파드, 복제 3) | 모놀리식 (프로세스 하나, 복제 1) |
-| 오브젝트 스토리지 | S3 | MinIO |
+| 오브젝트 스토리지 | S3 | SeaweedFS (S3 API 호환. MinIO 커뮤니티판은 2025 단종) |
 | 보관 기간 | 수십 일 ~ 1년 | 약 7일 |
 
 Phase 9(EKS)에서 클러스터를 나누면 `backend/`·`grafana/` 의 배포 대상과 Alloy 의 push 주소만 바꾸면 되도록 구성한다.

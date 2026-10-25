@@ -1,0 +1,17 @@
+# Mimir·Loki·Tempo 가 붙는 S3 주소: http://seaweedfs.monitoring.svc:8333
+apiVersion: v1
+kind: Service
+metadata:
+  name: seaweedfs
+  labels:
+    app: seaweedfs
+spec:
+  selector:
+    app: seaweedfs
+  ports:
+  - name: s3
+    port: 8333
+    targetPort: s3
+  - name: metrics
+    port: 9327
+    targetPort: metrics

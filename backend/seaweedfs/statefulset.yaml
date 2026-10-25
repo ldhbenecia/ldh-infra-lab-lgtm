@@ -1,0 +1,78 @@
+# 오브젝트 스토리지 (S3 호환). 실무의 AWS S3 자리
+# Mimir·Loki·Tempo 가 S3 API 로 여기에 저장한다. Phase 9 에서는 이 대신 진짜 S3 주소를 쓴다
+#
+# MinIO 대신 SeaweedFS 를 쓰는 이유: MinIO 커뮤니티판은 2025-09 마지막 릴리스 후 아카이브,
+# 공식 Docker 이미지도 내려감 → 보안 패치 없는 소프트웨어를 새로 들이지 않음
+#
+# `weed mini` = master·volume·filer·S3 게이트웨이를 프로세스 하나로 띄우는 소규모·개발용 모드
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: seaweedfs
+  labels:
+    app: seaweedfs
+spec:
+  serviceName: seaweedfs
+  replicas: 1
+  selector:
+    matchLabels:
+      app: seaweedfs
+  template:
+    metadata:
+      labels:
+        app: seaweedfs
+    spec:
+      containers:
+      - name: seaweedfs
+        # latest 금지. 4.48 = 2026-09-28 릴리스
+        image: chrislusf/seaweedfs:4.48
+        args:
+        - mini
+        - -dir=/data
+        # 내부 컴포넌트끼리 부르는 주소. 파드 IP 는 재시작마다 바뀌므로 고정값
+        - -ip=127.0.0.1
+        # S3 사용자(키)와 권한. SealedSecret 에서 풀린 파일
+        - -s3.config=/etc/seaweedfs/s3.json
+        # 시스템 하나당 버킷 하나. Mimir 안에서는 prefix 로 blocks/ruler/alertmanager 를 나눔
+        # Loki(7.2)·Tempo(7.3) 때 여기에 추가
+        - -bucket=mimir
+        # 안 쓰는 기능은 끔
+        - -webdav=false
+        - -admin.ui=false
+        # 나중에 Alloy 가 SeaweedFS 자체도 긁을 수 있게
+        - -metricsPort=9327
+        ports:
+        - name: s3
+          containerPort: 8333
+        - name: metrics
+          containerPort: 9327
+        volumeMounts:
+        - name: data
+          mountPath: /data
+        - name: s3-config
+          mountPath: /etc/seaweedfs
+          readOnly: true
+        resources:
+          requests:
+            cpu: 50m
+            memory: 128Mi
+          limits:
+            memory: 512Mi
+        readinessProbe:
+          tcpSocket:
+            port: s3
+          initialDelaySeconds: 5
+          periodSeconds: 10
+      volumes:
+      - name: s3-config
+        secret:
+          secretName: seaweedfs-s3-config
+  volumeClaimTemplates:
+  - metadata:
+      name: data
+    spec:
+      accessModes: [ReadWriteOnce]
+      storageClassName: local-path
+      resources:
+        requests:
+          storage: 5Gi
