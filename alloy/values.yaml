@@ -1,0 +1,85 @@
+# Grafana Alloy 차트 (grafana/helm-charts alloy 1.13.1, Alloy v1.20.1)
+# 7.1: 메트릭만. 로그(7.2)·트레이스(7.3)는 이 설정에 블록을 추가해 나간다
+
+# ── 배포 형태: 노드마다 하나 (DaemonSet) ─────────────────────────────
+# 로그(7.2)는 "그 노드의 파드 로그 파일"을 읽어야 해서 노드마다 있어야 함 → 처음부터 DaemonSet
+controller:
+  type: daemonset
+
+alloy:
+  # 노드가 여러 대면 Alloy 도 여러 개 → 각자 모든 대상을 긁으면 메트릭이 중복 저장됨
+  # clustering: Alloy 끼리 대상을 나눠 가짐 (지금은 노드 1대라 1개지만 실무 구성대로)
+  clustering:
+    enabled: true
+
+  resources:
+    requests: { cpu: 50m, memory: 128Mi }
+    limits:   { memory: 512Mi }
+
+  # ── 수집 파이프라인 (Alloy 설정 언어) ──────────────────────────────
+  # 블록 = 컴포넌트, forward_to = 다음 컴포넌트로 넘김 → 파이프라인
+  configMap:
+    content: |
+      logging {
+        level  = "info"
+        format = "logfmt"
+      }
+
+      // ── msa 테넌트 ─────────────────────────────────────────────
+      // msa ns 의 ServiceMonitor 를 읽어서 → 그 대상들을 긁고 → msa 칸으로 보냄
+      prometheus.operator.servicemonitors "msa" {
+        namespaces = ["msa"]
+        clustering {
+          enabled = true          // 여러 Alloy 가 대상을 나눠 긁음
+        }
+        forward_to = [prometheus.remote_write.msa.receiver]
+      }
+
+      prometheus.remote_write "msa" {
+        endpoint {
+          url     = "http://mimir-gateway.monitoring.svc/api/v1/push"
+          headers = { "X-Scope-OrgID" = "msa" }
+        }
+      }
+
+      // ── morris 테넌트 ──────────────────────────────────────────
+      prometheus.operator.servicemonitors "morris" {
+        namespaces = ["morris"]
+        clustering {
+          enabled = true
+        }
+        forward_to = [prometheus.remote_write.morris.receiver]
+      }
+
+      prometheus.remote_write "morris" {
+        endpoint {
+          url     = "http://mimir-gateway.monitoring.svc/api/v1/push"
+          headers = { "X-Scope-OrgID" = "morris" }
+        }
+      }
+
+# ── CRD 안 만듦 ───────────────────────────────────────────────────────
+# 기본값은 PodLogs CRD(Grafana 전용 로그 수집 요청서)를 설치함. 쓰지 않으므로 끔
+crds:
+  create: false
+
+# ── 권한: 필요한 것만 ────────────────────────────────────────────────
+# 차트 기본값은 클러스터 전체의 secrets·configmaps 읽기까지 포함 → 너무 넓음
+# 지금 필요한 것: ServiceMonitor 를 읽고, 그 대상(Service → EndpointSlice → Pod)을 찾는 것
+# 7.2(로그)·노드 메트릭을 할 때 그 순간에 필요한 권한만 추가
+#
+# 차트 템플릿 주의: rules 와 clusterRules 를 둘 다 ClusterRole 에 이어 붙이는데,
+# 한쪽을 [] 로 비우면 "[]" 가 목록 중간에 찍혀 YAML 이 깨진다 (helm template 에서 발견)
+# → 둘 다 비우지 않도록 나눠 담음. 둘 다 ClusterRole 로 들어가므로 효과는 같다
+rbac:
+  rules:
+    - apiGroups: ["monitoring.coreos.com"]
+      resources: ["servicemonitors"]
+      verbs: ["get", "list", "watch"]
+    - apiGroups: [""]
+      resources: ["services", "endpoints", "pods"]
+      verbs: ["get", "list", "watch"]
+  clusterRules:
+    - apiGroups: ["discovery.k8s.io"]
+      resources: ["endpointslices"]
+      verbs: ["get", "list", "watch"]
